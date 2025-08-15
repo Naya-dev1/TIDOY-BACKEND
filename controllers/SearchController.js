@@ -1,107 +1,89 @@
+// controllers/SearchController.js
 const Property = require("../models/Property2");
 
 exports.searchProperties = async (req, res) => {
   try {
     const {
-      city,
-      area,
+      location,
+      propertyType,
       minPrice,
       maxPrice,
-      rooms,
-      bathrooms,
       amenities,
-      propertyType,
-      ratingMin,
+      bedrooms,
+      bathrooms,
       sortBy,
-      page = 1,
-      limit = 20,
     } = req.query;
 
-    const query = {};
+    let filterConditions = [];
 
-    // City / Area (case-insensitive)
-    if (city) query.city = { $regex: city, $options: "i" };
-    if (area) query.area = { $regex: area, $options: "i" };
-
-    // Price filter (NaN-proof)
-    if (
-      (minPrice !== undefined && minPrice !== "") ||
-      (maxPrice !== undefined && maxPrice !== "")
-    ) {
-      query.pricePerNight = {};
-      if (!isNaN(Number(minPrice)) && minPrice !== "") {
-        query.pricePerNight.$gte = Number(minPrice);
-      }
-      if (!isNaN(Number(maxPrice)) && maxPrice !== "") {
-        query.pricePerNight.$lte = Number(maxPrice);
-      }
-      if (Object.keys(query.pricePerNight).length === 0) {
-        delete query.pricePerNight;
-      }
+    // City or Area search (case-insensitive)
+    if (location) {
+      filterConditions.push({
+        $or: [
+          { city: { $regex: location, $options: "i" } },
+          { area: { $regex: location, $options: "i" } },
+        ],
+      });
     }
 
-    // Rooms filter
-    if (!isNaN(Number(rooms)) && rooms !== "") {
-      query.rooms = { $gte: Number(rooms) };
+    // Property Type
+    if (propertyType && propertyType.toLowerCase() !== "any") {
+      filterConditions.push({
+        propertyType: { $regex: new RegExp(propertyType, "i") },
+      });
     }
 
-    // Bathrooms filter
-    if (!isNaN(Number(bathrooms)) && bathrooms !== "") {
-      query.bathrooms = { $gte: Number(bathrooms) };
+    // Price Range
+    if (minPrice || maxPrice) {
+      let priceFilter = {};
+      if (minPrice) priceFilter.$gte = Number(minPrice);
+      if (maxPrice) priceFilter.$lte = Number(maxPrice);
+      filterConditions.push({ pricePerNight: priceFilter });
     }
 
-    // Property type (case-insensitive)
-    if (propertyType) {
-      query.propertyType = { $regex: propertyType, $options: "i" };
+    // Amenities
+    if (amenities && amenities.toLowerCase() !== "any") {
+      const amenitiesArray = amenities.split(",").map((a) => a.trim());
+      filterConditions.push({
+        $or: amenitiesArray.map((a) => ({
+          amenities: { $regex: new RegExp(a, "i") }, // case-insensitive
+        })),
+      });
     }
 
-    // Amenities filter (case-insensitive)
-    if (amenities) {
-      const amenityArray = Array.isArray(amenities)
-        ? amenities
-        : amenities.split(",").map((a) => a.trim());
-
-      query.$and = amenityArray.map((am) => ({
-        amenities: { $elemMatch: { $regex: am, $options: "i" } },
-      }));
+    // Bedrooms
+    if (bedrooms) {
+      filterConditions.push({ rooms: Number(bedrooms) });
     }
 
-    // Rating filter (use score field from schema)
-    if (!isNaN(Number(ratingMin)) && ratingMin !== "") {
-      query.score = { $gte: Number(ratingMin) };
+    // Bathrooms
+    if (bathrooms) {
+      filterConditions.push({ bathrooms: Number(bathrooms) });
     }
 
-    // Pagination
-    const skip = (Number(page) - 1) * Number(limit);
-    const total = await Property.countDocuments(query);
+    // Final query (OR-based)
+    let query = filterConditions.length > 0 ? { $or: filterConditions } : {};
 
-    // Fetch results
-    let properties = await Property.find(query).skip(skip).limit(Number(limit));
-
-    // Sorting
+    // Sorting options
+    let sortOption = {};
     if (sortBy) {
-      if (sortBy === "priceAsc") {
-        properties.sort((a, b) => a.pricePerNight - b.pricePerNight);
-      }
-      if (sortBy === "priceDesc") {
-        properties.sort((a, b) => b.pricePerNight - a.pricePerNight);
-      }
-      if (sortBy === "rating") {
-        properties.sort((a, b) => (b.score || 0) - (a.score || 0));
-      }
-      if (sortBy === "newest") {
-        properties.sort(
-          (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
-        );
+      if (sortBy === "highestPrice") {
+        sortOption.pricePerNight = -1;
+      } else if (sortBy === "lowestPrice") {
+        sortOption.pricePerNight = 1;
+      } else if (sortBy === "mostPopular") {
+        sortOption.score = -1;
+      } else if (sortBy === "bestSelling") {
+        sortOption.reviewCount = -1;
       }
     }
 
-    res.status(200).json({
+    // Query DB with filters + sorting
+    let properties = await Property.find(query).sort(sortOption);
+
+    res.json({
       success: true,
       count: properties.length,
-      total,
-      page: Number(page),
-      pages: Math.ceil(total / Number(limit)),
       data: properties,
     });
   } catch (error) {
